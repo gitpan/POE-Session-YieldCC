@@ -1,0 +1,6 @@
+Revision history for Perl extension POE::Session::YieldCC.
+
+0.01  Fri Apr  8 19:35:28 2005
+	- original version; created by h2xs 1.23 with options
+		-AXn POE::Coro --skip-exporter --skip-pport --skip-autoloader
+

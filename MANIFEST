@@ -1,0 +1,8 @@
+Changes
+Makefile.PL
+MANIFEST
+README
+t/POE-Session-YieldCC.t
+lib/POE/Session/YieldCC.pm
+examples/dns.pl
+META.yml                                 Module meta-data (added by MakeMaker)

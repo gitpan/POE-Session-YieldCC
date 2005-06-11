@@ -1,8 +1,12 @@
 Changes
+examples/dns.pl
+examples/sleep.pl
+examples/sleep2.pl
+examples/trace.pl
+examples/tryleak.pl
+lib/POE/Session/YieldCC.pm
 Makefile.PL
-MANIFEST
+MANIFEST			This list of files
 README
 t/POE-Session-YieldCC.t
-lib/POE/Session/YieldCC.pm
-examples/dns.pl
 META.yml                                 Module meta-data (added by MakeMaker)

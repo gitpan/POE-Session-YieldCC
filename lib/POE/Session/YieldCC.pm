@@ -5,7 +5,7 @@ use warnings;
 use POE;
 use Coro::State;
 
-our $VERSION = '0.012';
+our $VERSION = '0.10';
 
 BEGIN { *TRACE = sub () { 0 } unless defined *TRACE{CODE} }
 BEGIN { *LEAK  = sub () { 1 } unless defined *LEAK{CODE} }
@@ -16,14 +16,13 @@ our $_uniq = 1;
 sub _get_uniq { $_uniq++ }
 
 our $main;
-our $last_state; # XXX
+our $last_state;
 sub _invoke_state {
   my $self = shift;
   my $args = \@_; # so I can close on the args below
 
   # delimit the continuation stack
   local $main = Coro::State->new;
-  #print ">>main=$main\n";
 
   my $next;
   $next = Coro::State->new(sub {
@@ -37,10 +36,9 @@ sub _invoke_state {
     # FACT: at this point there are no continuations into this state
     # hence we're all done, and everything should be destroyed!
 
-    #my $save = Coro::State->new;
-    $last_state = Coro::State->new; # XXX
+    $last_state = Coro::State->new;
     register_object($last_state, "last_state") if LEAK;
-    $last_state->transfer($main, 0); # XXX
+    $last_state->transfer($main, 0);
 
     die "oops shouldn't get here"; # ie you should have discarded $next
   });
@@ -52,12 +50,7 @@ sub _invoke_state {
   $main->transfer($next, 0);
   print "  post-invoking $args->[1]\n" if TRACE;
 
-  $main = $next = undef;
-  if ($last_state) {
-    #print "last state!!!\n";
-    $last_state = undef;
-    #exit;
-  }
+  $main = $next = $last_state = undef;
 }
 
 sub yieldCC {
@@ -69,19 +62,7 @@ sub yieldCC {
   my $save = Coro::State->new;
   $POE::Kernel::poe_kernel->yield(
     $state,
-    sub { # the "continuation"
-      @retval = @_;
-      @_ = ();
-
-      print "continuation invoked\n" if TRACE;
-      local $main = Coro::State->new;
-      register_object($main, "continuation-main") if LEAK;
-      $main->transfer($save, 0);
-      $save = undef;
-      $last_state = undef; # XXX
-
-      print "continuation finished\n" if TRACE;
-    },
+    POE::Session::YieldCC::Continuation->new($save, \@retval, $self),
     \@args,
   );
 
@@ -101,19 +82,51 @@ sub sleep {
   my $uniq = _get_uniq;
 
   $poe_kernel->state(__PACKAGE__."::sleep_${uniq}" => \&_before_sleep);
-  $poe_kernel->state(__PACKAGE__."::sleep_${uniq}_after" => \&_after_sleep);
   $self->yieldCC(__PACKAGE__."::sleep_${uniq}", $delay);
 }
 
 sub _before_sleep {
   my ($cont, $args) = @_[ARG0, ARG1];
-  $_[KERNEL]->delay($_[STATE]."_after", $$args[0], $cont, $_[STATE]);
+  $_[KERNEL]->delay($cont->make_state, $$args[0]);
+  $_[KERNEL]->state($_[STATE]);
 }
 
-sub _after_sleep {
-  $_[ARG0]->();
-  $_[KERNEL]->state($_[ARG1]);
-  $_[KERNEL]->state($_[ARG1] . "_after");
+{
+  package POE::Session::YieldCC::Continuation;
+  use POE;
+  use overload
+    '&{}' => 'as_code',
+    fallback => 1;
+  use constant SELF_SAVE    => 0;
+  use constant SELF_RETVAL  => 1;
+  use constant SELF_SESSION => 2;
+  sub new { my $c = shift; return bless [@_], $c }
+  sub as_code { my $s = shift; return sub { $s->invoke(@_) } }
+  sub invoke {
+    my $self = shift;
+    my ($save, $retval) = @$self;
+    @$retval = @_;
+    @_ = ();
+
+    print "continuation invoked\n" if POE::Session::YieldCC::TRACE;
+    local $main = Coro::State->new;
+    POE::Session::YieldCC::register_object($main, "continuation-main")
+      if POE::Session::YieldCC::LEAK;
+    $main->transfer($save, 0);
+    $save = $last_state = undef;
+    print "continuation finished\n" if POE::Session::YieldCC::TRACE;
+  }
+  sub make_state {
+    my $self = shift;
+    $self->[SELF_SESSION]->register_state(
+      "\0$self" => sub {
+	$self->invoke(@_[ARG0..$#_]);
+	$self->[SELF_SESSION]->register_state("\0$self");
+	$self = undef;
+      }
+    );
+    return "\0$self";
+  }
 }
 
 use Scalar::Util qw/weaken/;
@@ -133,7 +146,6 @@ END {
   if (@objects) {
     print STDERR scalar(@objects), " objects still exist :-/\n";
     print STDERR "$_ $descriptions{$_}\n" for sort @objects;
-    #use Devel::Peek; Dump($_) for sort @objects;
   }
 }
 
@@ -186,6 +198,9 @@ back to where C<yieldCC> was called returning any arguments to the continuation
 from the C<yieldCC>.  Once the original state that called yieldCC finishes
 control returns to where the continuation was invoked.
 
+In fact the "continuation" is also an object with several useful methods that
+are listed below.
+
 Examples can be found in the examples/ directory of the distribution.
 
 THIS MODULE IS EXPERIMENTAL.  And while I'm pretty sure I've squashed all the
@@ -201,6 +216,25 @@ Takes a number of seconds to sleep for (possibly fraction in the same way
 that POE::Kernel::delay can take fractional seconds) suspending the current
 event and only returning after the time has expired.   POE events continue to
 be processed while you're sleeping.
+
+=back
+
+=head1 CONTINUATION METHODS
+
+=over 2
+
+=item invoke ARGS
+
+The same as treating the continuation as a subroutine reference: it invokes
+the continuation passing the arguments as the return value of the yieldCC
+that created it.  It returns when the original handler next gives up control
+either at its end or at another yieldCC call.  It has no meaningful return
+value at the current time.
+
+=item make_state
+
+Returns the name of a state of the session which when posted to invokes
+the continuation with the event's arguments.
 
 =back
 

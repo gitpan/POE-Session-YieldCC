@@ -5,7 +5,7 @@ use warnings;
 use POE;
 use Coro::State;
 
-our $VERSION = '0.10';
+our $VERSION = '0.200';
 
 BEGIN { *TRACE = sub () { 0 } unless defined *TRACE{CODE} }
 BEGIN { *LEAK  = sub () { 1 } unless defined *LEAK{CODE} }
@@ -88,6 +88,51 @@ sub sleep {
 sub _before_sleep {
   my ($cont, $args) = @_[ARG0, ARG1];
   $_[KERNEL]->delay($cont->make_state, $$args[0]);
+  $_[KERNEL]->state($_[STATE]);
+}
+
+sub wait {
+  my $self = shift;
+  my $uniq = _get_uniq;
+
+  $poe_kernel->state(__PACKAGE__."::wait_event_${uniq}" => \&_before_wait);
+  $self->yieldCC(__PACKAGE__."::wait_event_${uniq}", @_);
+}
+
+sub _before_wait {
+  my ($cont, $args) = @_[ARG0, ARG1];
+  my $state = shift @$args;
+  my $timeout = shift @$args;
+  my @post_timeout = @$args;
+
+  my $tid;
+  my $cleanup = sub {
+    $poe_kernel->state($state);
+    $poe_kernel->alarm_remove($tid) if defined $tid;
+    $tid = undef;
+  };
+
+  my $handle = sub {
+    return unless defined $cont;
+
+    my $res = shift;
+    if (!$res && @post_timeout) {
+      $poe_kernel->state($state => @post_timeout);
+    } else {
+      $cleanup->();
+    }
+    
+    $cont->invoke($res, @_);
+    $cont = undef;
+  };
+
+  $_[KERNEL]->state($state => sub { $handle->(1, @_[ARG0..$#_]) });
+
+  if ($timeout) {
+    $_[KERNEL]->state($_[STATE]."_timeout" => sub { $handle->(0) });
+    $tid = $_[KERNEL]->delay_set($_[STATE]."_timeout", $timeout);
+  }
+
   $_[KERNEL]->state($_[STATE]);
 }
 
@@ -179,6 +224,14 @@ POE::Session::YieldCC - POE::Session extension for using continuations
 	$_[SESSION]->sleep(60);
 	print "That was a short nap!\n";
       },
+      demo_wait = sub {
+        print "I want to wait right now\n";
+        $_[SESSION]->wait('demo_wait_event');
+        print "Great!\n";
+      },
+      demo_wait_trigger = sub {
+        $_[KERNEL]->yield('demo_wait_event');
+      },
     },
   );
   $poe_kernel->run();
@@ -216,6 +269,23 @@ Takes a number of seconds to sleep for (possibly fraction in the same way
 that POE::Kernel::delay can take fractional seconds) suspending the current
 event and only returning after the time has expired.   POE events continue to
 be processed while you're sleeping.
+
+=item wait EVENT_NAME [, TIMEOUT [, POST_TIMEOUT_HANDLER... ]]
+
+Takes an event to wait for, suspending the current event. When the wake-up
+event is dispatched, control passes back and C<wait> returns true, followed by
+any arguments passed in with the event. As with C<sleep>, POE events continue to
+be processed while you're waiting.
+
+If a timeout is provided, will optionally return after that number of seconds.
+In the case of a timeout, false is returned.
+
+When a timeout is involved, it is possible that some code may try to dispatch
+the wakeup-event after C<wait> has already returned. By default the event will
+no longer be registered any more, so _default will be delivered. However, if
+you so wish you can keep the event registered by providing your own event handler
+to take over after a timeout occurs. Anything that C<$kernel->state> understands
+is acceptable here.
 
 =back
 

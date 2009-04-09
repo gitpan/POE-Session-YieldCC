@@ -5,7 +5,7 @@ use warnings;
 use POE;
 use Coro::State;
 
-our $VERSION = '0.200';
+our $VERSION = '0.201';
 
 BEGIN { *TRACE = sub () { 0 } unless defined *TRACE{CODE} }
 BEGIN { *LEAK  = sub () { 1 } unless defined *LEAK{CODE} }
@@ -38,7 +38,7 @@ sub _invoke_state {
 
     $last_state = Coro::State->new;
     register_object($last_state, "last_state") if LEAK;
-    $last_state->transfer($main, 0);
+    $last_state->transfer($main);
 
     die "oops shouldn't get here"; # ie you should have discarded $next
   });
@@ -47,7 +47,7 @@ sub _invoke_state {
   register_object($next, "next") if LEAK;
 
   print "  pre-invoking $args->[1]\n" if TRACE;
-  $main->transfer($next, 0);
+  $main->transfer($next);
   print "  post-invoking $args->[1]\n" if TRACE;
 
   $main = $next = $last_state = undef;
@@ -70,7 +70,7 @@ sub yieldCC {
 
   # save the current state, and jump back out to main
   print "jumping back out\n" if TRACE;
-  $save->transfer($main, 0);
+  $save->transfer($main);
 
   return wantarray ? @retval : $retval[0];
 }
@@ -157,16 +157,16 @@ sub _before_wait {
     local $main = Coro::State->new;
     POE::Session::YieldCC::register_object($main, "continuation-main")
       if POE::Session::YieldCC::LEAK;
-    $main->transfer($save, 0);
+    $main->transfer($save);
     $save = $last_state = undef;
     print "continuation finished\n" if POE::Session::YieldCC::TRACE;
   }
   sub make_state {
     my $self = shift;
-    $self->[SELF_SESSION]->register_state(
+    $self->[SELF_SESSION]->_register_state(
       "\0$self" => sub {
 	$self->invoke(@_[ARG0..$#_]);
-	$self->[SELF_SESSION]->register_state("\0$self");
+	$self->[SELF_SESSION]->_register_state("\0$self");
 	$self = undef;
       }
     );
